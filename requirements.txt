@@ -1,0 +1,1 @@
+# Exact list of dependencies with versions
