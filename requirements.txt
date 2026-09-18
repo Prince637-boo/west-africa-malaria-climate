@@ -1,1 +1,39 @@
 # Exact list of dependencies with versions
+# --- Data processing and scientific computing ---
+numpy>=1.26.0
+pandas>=2.1.0
+scipy>=1.11.0
+
+# --- Geospatial processing and raster data (weather/MAP) ---
+geopandas>=0.14.0
+shapely>=2.0.0
+rasterio>=1.3.0
+xarray>=2023.10.0
+netCDF4>=1.6.0
+rioxarray>=0.15.0
+
+# --- HTTP requests and APIs (ERA5, CHIRPS, MAP) ---
+requests>=2.31.0
+cdsapi>=0.6.1       # API for downloading ERA5 data from the Copernicus Climate Data Store
+urllib3>=2.0.0
+
+# --- Machine learning and temporal validation ---
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+lightgbm>=4.1.0
+
+# --- Data visualization and cartography ---
+matplotlib>=3.8.0
+seaborn>=0.13.0
+folium>=0.15.0
+plotly>=5.18.0
+
+# --- Web application (backend / dashboard) ---
+fastapi>=0.104.0
+uvicorn>=0.24.0
+streamlit>=1.28.0
+
+# --- Code quality and scientific reproducibility ---
+jupyter>=1.0.0
+pytest>=7.4.0
+python-dotenv>=1.0.0
