@@ -1,21 +1,37 @@
+"""Download monthly climate series from the Open-Meteo ERA5 archive API."""
+
 from __future__ import annotations
 
-import os
 import time
-from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
 import requests
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_RAW = PROJECT_ROOT / "data" / "raw"
-DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
-DATA_RAW.mkdir(parents=True, exist_ok=True)
-DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
+from src.config import (
+    CLIMATE_API_URL,
+    CLIMATE_END,
+    CLIMATE_START,
+    CLIMATE_TIMEZONE,
+    DATA_PROCESSED,
+    DATA_RAW,
+    ensure_data_dirs,
+)
+from src.data.provenance import write_data_manifest
+from src.data.resample import resample_monthly
+from src.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 
-def _request_with_backoff(url: str, params=None, timeout: int = 30, max_retries: int = 5, base_delay: float = 1.0, max_delay: float = 30.0):
+def _request_with_backoff(
+    url: str,
+    params=None,
+    timeout: int = 30,
+    max_retries: int = 5,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+):
     last_error = None
     for attempt in range(1, max_retries + 1):
         try:
@@ -27,7 +43,12 @@ def _request_with_backoff(url: str, params=None, timeout: int = 30, max_retries:
             if attempt == max_retries:
                 raise
             wait_time = min(base_delay * (2 ** (attempt - 1)), max_delay)
-            print(f"Request failed on attempt {attempt}/{max_retries}. Retrying in {wait_time:.1f} seconds...")
+            logger.warning(
+                "Request failed on attempt %s/%s. Retrying in %.1f seconds...",
+                attempt,
+                max_retries,
+                wait_time,
+            )
             time.sleep(wait_time)
     if last_error is not None:
         raise last_error
@@ -35,21 +56,25 @@ def _request_with_backoff(url: str, params=None, timeout: int = 30, max_retries:
 
 
 def fetch_openmeteo_climate(
-    start_date: str = "2020-01-01",
-    end_date: str = "2023-12-31",
+    start_date: str = CLIMATE_START,
+    end_date: str = CLIMATE_END,
     request_delay_seconds: float = 1.0,
     checkpoint_every_districts: int = 5,
 ) -> pd.DataFrame:
-    """Download monthly precipitation and temperature features for each district centroid."""
-    print(f"Downloading climate data from {start_date} to {end_date}...")
+    """Download precipitation and 2 m temperature at one in-polygon point per unit."""
+    ensure_data_dirs()
+    logger.info(
+        "Downloading Open-Meteo ERA5 archive climate from %s to %s (point extraction, not zonal mean).",
+        start_date,
+        end_date,
+    )
     geojson_path = DATA_RAW / "togo_districts.geojson"
     if not geojson_path.exists():
-        raise FileNotFoundError("Run src/data/download_data.py or fetch_malaria_data.py first to download district boundaries.")
+        raise FileNotFoundError("Run src/data/download_data.py first to download GADM polygons.")
 
-    gdf_districts = gpd.read_file(geojson_path)
+    gdf_districts = gpd.read_file(geojson_path).reset_index(drop=True)
     gdf_projected = gdf_districts.to_crs(epsg=32631)
-    centroids_projected = gdf_projected.geometry.centroid
-    centroids_latlon = centroids_projected.to_crs(epsg=4326)
+    points_latlon = gdf_projected.geometry.representative_point().to_crs(epsg=4326)
 
     csv_out = DATA_PROCESSED / "togo_climate_monthly.csv"
     seen_keys = set()
@@ -58,14 +83,13 @@ def fetch_openmeteo_climate(
         if not existing.empty:
             seen_keys = set(zip(existing["district_id"].astype(str), existing["date"].astype(str)))
 
-    records = []
-    base_url = "https://archive-api.open-meteo.com/v1/archive"
+    records: list[dict] = []
 
-    for idx, row in gdf_districts.iterrows():
+    for pos, row in gdf_districts.iterrows():
         dist_id = row["GID_2"]
         dist_name = row["NAME_2"]
-        lat = centroids_latlon.iloc[idx].y
-        lon = centroids_latlon.iloc[idx].x
+        lat = float(points_latlon.iloc[pos].y)
+        lon = float(points_latlon.iloc[pos].x)
 
         params = {
             "latitude": lat,
@@ -78,39 +102,34 @@ def fetch_openmeteo_climate(
                 "temperature_2m_max",
                 "temperature_2m_min",
             ],
-            "timezone": "Africa/Lome",
+            "timezone": CLIMATE_TIMEZONE,
         }
 
         try:
-            response = _request_with_backoff(base_url, params=params, timeout=30, max_retries=5, base_delay=1.0, max_delay=30.0)
+            response = _request_with_backoff(
+                CLIMATE_API_URL, params=params, timeout=30, max_retries=5, base_delay=1.0, max_delay=30.0
+            )
             data = response.json()
             daily_data = data.get("daily", {})
             if not daily_data or "time" not in daily_data:
-                print(f"Warning: no climate data returned for {dist_name}.")
+                logger.warning("No climate data returned for %s.", dist_name)
                 continue
 
             df_daily = pd.DataFrame(daily_data)
             df_daily["time"] = pd.to_datetime(df_daily["time"])
-            df_monthly = (
-                df_daily.resample("ME", on="time")
-                .agg({
-                    "precipitation_sum": "sum",
-                    "temperature_2m_mean": "mean",
-                    "temperature_2m_max": "mean",
-                    "temperature_2m_min": "mean",
-                })
-                .reset_index()
-            )
+            df_monthly = resample_monthly(df_daily)
 
             for _, month_row in df_monthly.iterrows():
                 record = {
                     "district_id": dist_id,
                     "district_name": dist_name,
-                    "date": month_row["time"].strftime("%Y-%m-01"),
+                    "date": pd.Timestamp(month_row["time"]).to_period("M").to_timestamp().strftime("%Y-%m-01"),
                     "precipitation_mm": round(float(month_row["precipitation_sum"]), 2),
                     "temp_mean_c": round(float(month_row["temperature_2m_mean"]), 2),
                     "temp_max_c": round(float(month_row["temperature_2m_max"]), 2),
                     "temp_min_c": round(float(month_row["temperature_2m_min"]), 2),
+                    "extract_latitude": round(lat, 5),
+                    "extract_longitude": round(lon, 5),
                 }
                 key = (str(record["district_id"]), record["date"])
                 if key in seen_keys:
@@ -118,7 +137,7 @@ def fetch_openmeteo_climate(
                 records.append(record)
                 seen_keys.add(key)
 
-            if len(records) >= 250 or (idx + 1) % checkpoint_every_districts == 0:
+            if len(records) >= 250 or (pos + 1) % checkpoint_every_districts == 0:
                 df_batch = pd.DataFrame(records)
                 if not df_batch.empty:
                     file_exists = csv_out.exists()
@@ -128,7 +147,7 @@ def fetch_openmeteo_climate(
             time.sleep(request_delay_seconds)
 
         except Exception as exc:  # pragma: no cover - network failure path
-            print(f"Error while processing {dist_name}: {exc}")
+            logger.error("Error while processing %s: %s", dist_name, exc)
             continue
 
     if records:
@@ -137,9 +156,10 @@ def fetch_openmeteo_climate(
         df_batch.to_csv(csv_out, mode="a" if file_exists else "w", header=not file_exists, index=False)
 
     final_df = pd.read_csv(csv_out) if csv_out.exists() else pd.DataFrame()
-    print(f"Climate extraction complete: {len(final_df)} rows saved in '{csv_out}'.")
+    write_data_manifest()
+    logger.info("Climate extraction complete: %s rows in %s.", len(final_df), csv_out)
     return final_df
 
 
 if __name__ == "__main__":
-    fetch_openmeteo_climate(start_date="2020-01-01", end_date="2023-12-31")
+    fetch_openmeteo_climate()

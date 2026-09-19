@@ -1,8 +1,8 @@
 # Contributing
 
-This project is designed for rigorous, publication-oriented research on malaria dynamics in Togo. Contributions should therefore prioritize scientific correctness, methodological transparency, reproducibility, and operational relevance.
+This project is a **methodological** forecasting pipeline. The bundled incidence series is simulated. Do not describe results as observational malaria prediction for Togo unless you have replaced the target with documented surveillance data.
 
-All project communication, documentation, comments, and code should be written in English unless a specific exception is formally agreed upon in the project discussion.
+All project communication, documentation, comments, and code should be written in English unless a specific exception is formally agreed in the project discussion.
 
 ## Project scope
 
@@ -124,4 +124,4 @@ Contributors are expected to maintain a high standard of scientific and technica
 
 ## Final note
 
-The project is intended to support a future scientific article and a practical public health decision-support application. As such, every contribution should reflect the principles of methodological rigor, transparency, and real-world usefulness.
+The project currently supports a methods article / software note on simulated panels. An epidemiological paper requires real monthly surveillance, official health-district geography, and the same validation standard described in the README.
