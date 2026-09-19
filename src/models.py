@@ -1,1 +1,0 @@
-# AI architecture definitions
