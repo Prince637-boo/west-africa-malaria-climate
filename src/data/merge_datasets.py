@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 
 
 def merge_epidemiological_and_climate_data() -> pd.DataFrame:
-    """Inner-join simulated incidence and climate on district_id and month."""
+    """Inner-join epidemiological and climate data on district and date."""
     path_malaria = DATA_PROCESSED / "togo_malaria_incidence_simulated.csv"
     path_climate = DATA_PROCESSED / "togo_climate_monthly.csv"
 
@@ -47,8 +47,18 @@ def merge_epidemiological_and_climate_data() -> pd.DataFrame:
         logger.warning("Detected %s missing values after merging; dropping incomplete rows.", null_counts)
         df_merged = df_merged.dropna().reset_index(drop=True)
 
-    if INCIDENCE_COL not in df_merged.columns:
+    incidence_col = None
+    for candidate in (INCIDENCE_COL, "malaria_incidence"):
+        if candidate in df_merged.columns:
+            incidence_col = candidate
+            break
+    if incidence_col is None:
         raise ValueError("Merged panel is missing the incidence column.")
+
+    if incidence_col != "malaria_incidence" and "malaria_incidence" not in df_merged.columns:
+        df_merged["malaria_incidence"] = df_merged[incidence_col]
+    if incidence_col != INCIDENCE_COL and INCIDENCE_COL not in df_merged.columns:
+        df_merged[INCIDENCE_COL] = df_merged["malaria_incidence"]
 
     output_path = DATA_PROCESSED / "togo_merged_monthly_panel.csv"
     df_merged.to_csv(output_path, index=False)

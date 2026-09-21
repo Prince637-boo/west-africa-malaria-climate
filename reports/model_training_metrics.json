@@ -1,0 +1,70 @@
+{
+  "Persistence": {
+    "rmse": 0.02456973111963518,
+    "mae": 0.019020131264916466,
+    "r2": 0.9253762013662525
+  },
+  "Drift_Persistence": {
+    "rmse": 0.019243686301490343,
+    "mae": 0.015087303102625299,
+    "r2": 0.9542223934312124,
+    "skill_vs_persistence": 0.2167726131072093,
+    "mae_diff_vs_pers": -0.00393282816229117,
+    "mae_diff_ci_95": "[-0.00446, -0.00340]",
+    "statistically_significant": true
+  },
+  "Damped_Drift": {
+    "rmse": 0.01763399267261992,
+    "mae": 0.013929395588572629,
+    "r2": 0.9615604887620265,
+    "skill_vs_persistence": 0.282287926279848,
+    "mae_diff_vs_pers": -0.0050907356763438385,
+    "mae_diff_ci_95": "[-0.00557, -0.00461]",
+    "statistically_significant": true
+  },
+  "District_Mean": {
+    "rmse": 0.12115534040614484,
+    "mae": 0.10713143892146977,
+    "r2": -0.8145196232401286,
+    "skill_vs_persistence": -3.9310812485579936,
+    "mae_diff_vs_pers": 0.08811130765655331,
+    "mae_diff_ci_95": "[0.08383, 0.09206]",
+    "statistically_significant": true
+  },
+  "District_Trend": {
+    "rmse": 0.024542489919948295,
+    "mae": 0.01900085918854415,
+    "r2": 0.9255415849313936,
+    "skill_vs_persistence": 0.0011087300692971258,
+    "mae_diff_vs_pers": -1.9272076372314768e-05,
+    "mae_diff_ci_95": "[-0.00062, 0.00056]",
+    "statistically_significant": false
+  },
+  "Random_Forest": {
+    "rmse": 0.018313522108941358,
+    "mae": 0.014478088163922256,
+    "r2": 0.9585408590469716,
+    "skill_vs_persistence": 0.254630747899968,
+    "mae_diff_vs_pers": -0.004542043100994212,
+    "mae_diff_ci_95": "[-0.00514, -0.00397]",
+    "statistically_significant": true
+  },
+  "XGBoost": {
+    "rmse": 0.017570888317890138,
+    "mae": 0.013731316995332333,
+    "r2": 0.9618351129309892,
+    "skill_vs_persistence": 0.284856304192594,
+    "mae_diff_vs_pers": -0.005288814269584138,
+    "mae_diff_ci_95": "[-0.00583, -0.00477]",
+    "statistically_significant": true
+  },
+  "LightGBM": {
+    "rmse": 0.017417024038504248,
+    "mae": 0.013617647806722187,
+    "r2": 0.9625005889073498,
+    "skill_vs_persistence": 0.2911186551575554,
+    "mae_diff_vs_pers": -0.005402483458194281,
+    "mae_diff_ci_95": "[-0.00594, -0.00489]",
+    "statistically_significant": true
+  }
+}

@@ -1,39 +1,35 @@
-"""End-to-end local pipeline after climate and GADM files exist."""
+"""Production entry point for the annual malaria and climate forecasting pipeline."""
 
 from __future__ import annotations
 
-import pandas as pd
-
-from src.config import DATA_PROCESSED
-from src.data.merge_datasets import merge_epidemiological_and_climate_data
-from src.data.simulate_incidence import simulate_malaria_incidence
-from src.features.engineering import generate_climate_lags
+from src.config import DATA_PROCESSED, ensure_data_dirs
 from src.logging_utils import get_logger
-from src.modeling.evaluation import evaluate_walk_forward
-from src.modeling.interpretability import permutation_importance_table
-from src.visualization.spatial_prediction_map import (
-    generate_district_timeseries_figure,
-    generate_spatial_prediction_figure,
-)
+from src.modeling.training import run_pipeline
 
 logger = get_logger(__name__)
 
 
 def main() -> None:
-    climate_path = DATA_PROCESSED / "togo_climate_monthly.csv"
-    if not climate_path.exists():
-        logger.error(
-            "Missing climate file. Run: python -m src.data.download_data && python -m src.data.climate_data"
+    """Execute the production pipeline end-to-end without swallowing errors."""
+    ensure_data_dirs()
+
+    incidence_path = DATA_PROCESSED / "west_africa_malaria_incidence_2000_2025.csv"
+    if not incidence_path.exists():
+        raise FileNotFoundError(
+            f"The malaria incidence dataset is missing: {incidence_path}. "
+            "Run the data preparation workflow before modeling."
         )
-        raise SystemExit(1)
-    climate = pd.read_csv(climate_path)
-    simulate_malaria_incidence(climate=climate)
-    merge_epidemiological_and_climate_data()
-    generate_climate_lags()
-    evaluate_walk_forward()
-    permutation_importance_table()
-    generate_spatial_prediction_figure()
-    generate_district_timeseries_figure()
+
+    climate_path = DATA_PROCESSED / "west_africa_climate_2000_2025.csv"
+    if not climate_path.exists():
+        raise FileNotFoundError(
+            f"The climate dataset is missing: {climate_path}. "
+            "Run the climate extraction workflow before modeling."
+        )
+
+    logger.info("Starting the annual forecasting pipeline.")
+    results = run_pipeline(split_year=2020, gap_years=1)
+    logger.info("Pipeline completed successfully with %s model evaluations.", len(results))
 
 
 if __name__ == "__main__":

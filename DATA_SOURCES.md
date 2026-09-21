@@ -1,45 +1,61 @@
-# Data sources, versions, and licenses
+# Data Sources, Versions, and Licenses
 
-All timestamps in `data/processed/data_manifest.json` are written when the local pipeline runs.
+This repository integrates spatial epidemiological targets with climate reanalysis and observation datasets across West Africa (Togo, Benin, Ghana, Burkina Faso) for the 2000–2025 period.
 
-## Administrative boundaries
+---
 
-| Field | Value |
-|---|---|
-| Dataset | GADM |
-| Version | 4.1 |
-| Layer | `gadm41_TGO_2` (Admin-2) |
-| URL | https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_TGO_2.json |
-| What the polygons are | Prefectures / second-level administrative units |
-| What they are **not** | Official Togo Ministry of Health / DHIS2 health districts |
-| License | GADM license; review https://gadm.org/license.html before redistribution |
+## 1. Administrative Boundaries
 
-## Climate
+Administrative level 2 (districts / prefectures) boundaries are used to spatialise regional malaria incidence and climate metrics.
 
 | Field | Value |
 |---|---|
-| Access API | Open-Meteo Archive (`https://archive-api.open-meteo.com/v1/archive`) |
-| Underlying reanalysis | ERA5, as served by Open-Meteo |
-| Not used | Copernicus CDS `cdsapi` downloads |
-| Native download | Daily precipitation and 2 m temperature |
-| Analysis grain | Calendar-month sums (precipitation) and means (temperature) |
-| Spatial support | One in-polygon representative point per Admin-2 unit (EPSG:32631 → WGS84) |
-| Not implemented | Zonal mean over the polygon |
-| Timezone | `Africa/Lome` |
+| **Dataset** | GADM (Database of Global Administrative Areas) |
+| **Version** | 4.1 |
+| **Layer** | `gadm41_{ISO3}_2` (Admin-2) for TGO, BEN, GHA, BFA |
+| **Source URL** | `https://geodata.ucdavis.edu/gadm/gadm4.1/json/` |
+| **Spatial Reference** | EPSG:4326 (WGS84) |
+| **Polygon Definition** | Prefectures, districts, and municipalities (Admin-2) |
+| **License** | Non-commercial academic use ([GADM License](https://gadm.org/license.html)) |
 
-## Incidence (target)
+---
+
+## 2. Malaria Incidence Target (Observational / MAP)
+
+Malaria incidence data are extracted directly from official high-resolution raster datasets provided by the **Malaria Atlas Project (MAP)**.
 
 | Field | Value |
 |---|---|
-| Type | **Simulated** panel (`togo_malaria_incidence_simulated.csv`) |
-| Not a source | Malaria Atlas Project monthly district incidence (MAP products are not used as the target; MAP incidence rasters are annual) |
-| Not a source | DHIS2 / SNIS / PNLP case counts |
-| Generator | `src/data/simulate_incidence.py` |
-| Seed | `src.config.RANDOM_SEED` (42) |
-| License | Simulated values are produced by this repository; they are not observational health data |
+| **Dataset** | Malaria Atlas Project — *Plasmodium falciparum* Incidence Rate |
+| **Release / Model** | GBD 2025 (Global Burden of Disease 2025 Release) |
+| **Format** | Annual GeoTIFF rasters (`2026_GBD2025_Global_Pf_Incidence_Rate_{YEAR}.tif`) |
+| **Time Period** | 2000 – 2025 (Annual temporal resolution) |
+| **Spatial Resolution** | ~5 km x 5 km (0.04166° grid) |
+| **Extraction Method** | Polygonal Zonal Statistics (`mean`, `min`, `max`, `std`) per Admin-2 unit using `rasterstats` |
+| **Target Variable** | `pf_incidence_rate` (Estimated cases per 1,000 population at risk) |
+| **Output File** | `data/processed/west_africa_malaria_incidence_2000_2025.csv` |
+| **License / Citation** | Open Access (Creative Commons Attribution 4.0 International — CC BY 4.0). Courtesy of Malaria Atlas Project / IHME. |
 
-Coefficients of the data-generating process are stored in `simulate_incidence.DGP` and copied into the manifest.
+---
 
-## Replacing the target with observations
+## 3. Climate Variables (ERA5 / Open-Meteo Archive)
 
-To move from a methods study to an epidemiological paper, replace the simulated file with monthly incidence (or cases + population) from DHIS2/SNIS, aligned to the official health-district geography, and keep the same horizon-aware feature and validation code.
+Historical meteorological predictors integrated into the feature engineering pipeline.
+
+| Field | Value |
+|---|---|
+| **Source API** | Open-Meteo Historical Weather API (`https://archive-api.open-meteo.com/v1/archive`) |
+| **Underlying Dataset** | ECMWF ERA5 Reanalysis |
+| **Variables** | Total Precipitation (mm), 2m Mean Temperature (°C), Relative Humidity (%) |
+| **Temporal Grain** | Daily aggregated to monthly metrics |
+| **Spatial Aggregation**| Zonal polygon means / centroid-based spatial joining for Admin-2 units |
+| **Timezone** | `Africa/Lome` (UTC+0) |
+| **License** | Copernicus Climate Change Service (C3S) Open Data License / Open-Meteo Terms |
+
+---
+
+## Data Provenance & Reproducibility Statement
+
+- Raw GeoTIFF rasters (15 GB) are stored locally under `data/raw/map_rasters/` and backed up off-repository.
+- GeoJSON administrative boundaries are cached in `data/raw/boundaries/`.
+- All extraction logic is fully deterministic and versioned in `src/data/extract_district_data.py`.
