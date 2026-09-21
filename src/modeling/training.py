@@ -1,137 +1,206 @@
-"""Train tree models for a single forecast horizon with nested time-series tuning."""
+"""Model training and walk-forward evaluation pipeline for district-level malaria forecasting."""
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+import lightgbm as lgb
+import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
-from sklearn.pipeline import Pipeline
 import xgboost as xgb
 
-from src.config import DATA_PROCESSED, FORECAST_HORIZONS, RANDOM_SEED, TARGET_PREFIX
-from src.features.engineering import prepare_horizon_frame
+from src.config import (
+    DISTRICT_ID_COL,
+    INCIDENCE_COL,
+    RANDOM_SEED,
+    REPORTS_DIR,
+    WALK_FORWARD_TEST_YEARS,
+    YEAR_COL,
+)
 from src.logging_utils import get_logger
-from src.modeling.features import feature_columns
-from src.modeling.metrics import regression_metrics
+from src.modeling.baselines import (
+    DampedDriftBaseline,
+    DistrictMeanBaseline,
+    DriftPersistenceBaseline,
+    LocalDistrictTrendBaseline,
+    PersistenceBaseline,
+)
+from src.modeling.features import feature_columns, prepare_annual_features
+from src.modeling.metrics import compute_metrics, paired_block_bootstrap_diff
 
 logger = get_logger(__name__)
 
-XGB_PARAM_GRID = {
-    "model__max_depth": [3, 6],
-    "model__n_estimators": [100, 200],
-}
 
+def train_and_evaluate() -> dict[str, dict[str, float | str | bool]]:
+    """Train ML models on incidence delta (Delta_t) using expanding window cross-validation.
+    
+    Evaluates ML models and baselines across multiple test years without data leakage.
+    Reconstructs forecasts as: y_hat = y_{t-1} + Delta_hat.
+    """
+    logger.info("Preparing annual features dataset...")
+    df = prepare_annual_features()
 
-def load_final_dataset() -> pd.DataFrame:
-    """Load the merged forecast-ready modeling dataset."""
-    path = DATA_PROCESSED / "togo_final_modeling_dataset.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"Dataset not found: {path}. Run the preprocessing pipeline first.")
-    return pd.read_csv(path, parse_dates=["date"])
+    if "target_delta" not in df.columns:
+        df["target_delta"] = df[INCIDENCE_COL] - df[f"{INCIDENCE_COL}_lag_1"]
 
-
-def _sorted_time_split(train_df: pd.DataFrame, n_splits: int = 3) -> TimeSeriesSplit:
-    n_splits = max(2, min(n_splits, max(2, train_df["date"].nunique() - 1)))
-    return TimeSeriesSplit(n_splits=min(3, n_splits))
-
-
-def fit_xgboost(train_df: pd.DataFrame, feature_cols: list[str], target_col: str) -> xgb.XGBRegressor:
-    """Tune XGBoost on an inner time-series split of the training origins only."""
-    ordered = train_df.sort_values("date")
-    pipe = Pipeline(
-        [
-            (
-                "model",
-                xgb.XGBRegressor(
-                    learning_rate=0.05,
-                    subsample=0.9,
-                    colsample_bytree=0.9,
-                    random_state=RANDOM_SEED,
-                    n_jobs=1,
-                ),
-            )
-        ]
-    )
-    n_unique = ordered["date"].nunique()
-    if n_unique < 6:
-        model = xgb.XGBRegressor(
-            n_estimators=150,
-            learning_rate=0.05,
-            max_depth=4,
-            random_state=RANDOM_SEED,
-            n_jobs=1,
+    years = sorted(df[YEAR_COL].unique())
+    if len(years) <= WALK_FORWARD_TEST_YEARS:
+        raise ValueError(
+            f"Not enough temporal depth ({len(years)} years) for walk-forward evaluation "
+            f"with {WALK_FORWARD_TEST_YEARS} test years."
         )
-        model.fit(ordered[feature_cols], ordered[target_col])
-        return model
 
-    search = GridSearchCV(
-        pipe,
-        XGB_PARAM_GRID,
-        cv=_sorted_time_split(ordered),
-        scoring="neg_mean_absolute_error",
-        n_jobs=1,
-        refit=True,
-    )
-    search.fit(ordered[feature_cols], ordered[target_col])
-    logger.info("XGBoost inner CV best params: %s", search.best_params_)
-    return search.best_estimator_.named_steps["model"]
+    test_years = years[-WALK_FORWARD_TEST_YEARS:]
+    logger.info("Walk-forward evaluation across test years: %s", test_years)
 
+    X_cols = feature_columns(df)
+    logger.info("Selected %s predictive features via whitelist.", len(X_cols))
 
-def fit_random_forest(train_df: pd.DataFrame, feature_cols: list[str], target_col: str) -> RandomForestRegressor:
-    model = RandomForestRegressor(
-        n_estimators=200,
-        max_depth=8,
-        min_samples_leaf=5,
-        random_state=RANDOM_SEED,
-        n_jobs=1,
-    )
-    model.fit(train_df[feature_cols], train_df[target_col])
-    return model
+    all_eval_rows: list[pd.DataFrame] = []
 
+    # Iterate over expanding windows
+    for test_year in test_years:
+        train_df = df[df[YEAR_COL] < test_year].copy()
+        test_df = df[df[YEAR_COL] == test_year].copy()
 
-def fit_lightgbm(train_df: pd.DataFrame, feature_cols: list[str], target_col: str):
-    import lightgbm as lgb
+        if test_df.empty:
+            continue
 
-    model = lgb.LGBMRegressor(
-        n_estimators=200,
-        learning_rate=0.05,
-        max_depth=6,
-        random_state=RANDOM_SEED,
-        verbose=-1,
-    )
-    model.fit(train_df[feature_cols], train_df[target_col])
-    return model
+        X_train = train_df[X_cols]
+        y_train_delta = train_df["target_delta"]
 
+        X_test = test_df[X_cols]
+        y_test_true = test_df[INCIDENCE_COL].to_numpy(dtype=float)
+        y_test_lag1 = test_df[f"{INCIDENCE_COL}_lag_1"].to_numpy(dtype=float)
 
-def train_and_predict(
-    test_df: pd.DataFrame | None = None,
-    horizon: int = 1,
-    dataset: pd.DataFrame | None = None,
-):
-    """Fit the tuned XGBoost model for one horizon and predict a provided or last-year test set."""
-    df = dataset if dataset is not None else load_final_dataset()
-    frame = prepare_horizon_frame(df, horizon)
-    target_col = f"{TARGET_PREFIX}{horizon}"
-    feature_cols = feature_columns(frame)
-    cutoff = frame[f"target_date_h{horizon}"].max() - pd.offsets.MonthBegin(11)
-    train_df = frame[frame[f"target_date_h{horizon}"] < cutoff].copy()
-    eval_df = test_df if test_df is not None else frame[frame[f"target_date_h{horizon}"] >= cutoff].copy()
-    if test_df is not None:
-        eval_df = prepare_horizon_frame(test_df, horizon) if target_col not in test_df.columns or "known_target_month_sin" not in test_df.columns else test_df.copy()
+        fold_eval = test_df[[DISTRICT_ID_COL, YEAR_COL, INCIDENCE_COL, f"{INCIDENCE_COL}_lag_1"]].copy()
 
-    model = fit_xgboost(train_df, feature_cols, target_col)
-    predictions = model.predict(eval_df[feature_cols])
-    metrics = regression_metrics(eval_df[target_col].to_numpy(), predictions)
-    pred_frame = eval_df[["district_id", "district_name", "date"]].copy()
-    pred_frame["horizon"] = horizon
-    pred_frame["predicted_incidence"] = predictions
-    pred_frame["observed_incidence"] = eval_df[target_col].to_numpy()
-    pred_frame["target_date"] = eval_df[f"target_date_h{horizon}"]
-    return model, pred_frame, metrics, feature_cols
+        # 1. Baseline Predictions
+        pers = PersistenceBaseline().fit(train_df)
+        pred_pers = pers.predict(test_df)
+        fold_eval["pred_Persistence"] = pred_pers
+        fold_eval["err_Persistence"] = y_test_true - pred_pers
+
+        drift = DriftPersistenceBaseline().fit(train_df)
+        pred_drift = drift.predict(test_df)
+        fold_eval["pred_Drift_Persistence"] = pred_drift
+        fold_eval["err_Drift_Persistence"] = y_test_true - pred_drift
+
+        damped = DampedDriftBaseline().fit(train_df)
+        pred_damped = damped.predict(test_df)
+        fold_eval["pred_Damped_Drift"] = pred_damped
+        fold_eval["err_Damped_Drift"] = y_test_true - pred_damped
+
+        dist_mean = DistrictMeanBaseline().fit(train_df)
+        pred_mean = dist_mean.predict(test_df)
+        fold_eval["pred_District_Mean"] = pred_mean
+        fold_eval["err_District_Mean"] = y_test_true - pred_mean
+
+        dist_trend = LocalDistrictTrendBaseline().fit(train_df)
+        pred_trend = dist_trend.predict(test_df)
+        fold_eval["pred_District_Trend"] = pred_trend
+        fold_eval["err_District_Trend"] = y_test_true - pred_trend
+
+        # 2. Machine Learning Regressors
+        ml_models = {
+            "Random_Forest": RandomForestRegressor(
+                n_estimators=150,
+                max_depth=6,
+                random_state=RANDOM_SEED,
+                n_jobs=-1,
+            ),
+            "XGBoost": xgb.XGBRegressor(
+                n_estimators=100,
+                max_depth=3,
+                learning_rate=0.03,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=RANDOM_SEED,
+                n_jobs=-1,
+            ),
+            "LightGBM": lgb.LGBMRegressor(
+                n_estimators=100,
+                max_depth=3,
+                learning_rate=0.03,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=RANDOM_SEED,
+                verbosity=-1,
+            ),
+        }
+
+        for name, model in ml_models.items():
+            model.fit(X_train, y_train_delta)
+            delta_pred = model.predict(X_test)
+            y_pred = np.clip(y_test_lag1 + delta_pred, a_min=0.0, a_max=None)
+
+            fold_eval[f"pred_{name}"] = y_pred
+            fold_eval[f"err_{name}"] = y_test_true - y_pred
+
+        all_eval_rows.append(fold_eval)
+
+    # Combine all out-of-sample forecast folds
+    full_eval_df = pd.concat(all_eval_rows, ignore_index=True)
+    y_true_all = full_eval_df[INCIDENCE_COL].to_numpy(dtype=float)
+
+    # Compute reference baseline RMSE for normalized metrics
+    pers_metrics = compute_metrics(y_true_all, full_eval_df["pred_Persistence"].to_numpy())
+    ref_rmse = pers_metrics["rmse"]
+
+    results: dict[str, dict[str, float | str | bool]] = {
+        "Persistence": pers_metrics,
+    }
+
+    model_names = [
+        "Drift_Persistence",
+        "Damped_Drift",
+        "District_Mean",
+        "District_Trend",
+        "Random_Forest",
+        "XGBoost",
+        "LightGBM",
+    ]
+
+    for name in model_names:
+        y_pred = full_eval_df[f"pred_{name}"].to_numpy()
+        metrics = compute_metrics(y_true_all, y_pred, ref_rmse)
+
+        # Paired District Block Bootstrap against Persistence
+        obs_diff, (ci_low, ci_high) = paired_block_bootstrap_diff(
+            full_eval_df,
+            err_model=f"err_{name}",
+            err_baseline="err_Persistence",
+            group_col=DISTRICT_ID_COL,
+            n_boot=1000,
+            seed=RANDOM_SEED,
+        )
+
+        metrics["mae_diff_vs_pers"] = float(obs_diff)
+        metrics["mae_diff_ci_95"] = f"[{ci_low:.5f}, {ci_high:.5f}]"
+        metrics["statistically_significant"] = bool(ci_low > 0 or ci_high < 0)
+
+        results[name] = metrics
+        logger.info(
+            "[%s] RMSE=%.4f | MAE=%.4f | R2=%.4f | MAE_Diff=%.5f (CI: %s)",
+            name,
+            metrics["rmse"],
+            metrics["mae"],
+            metrics["r2"],
+            obs_diff,
+            metrics["mae_diff_ci_95"],
+        )
+
+    # Save detailed evaluation report
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    report_file = REPORTS_DIR / "model_training_metrics.json"
+
+    with open(report_file, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2)
+
+    logger.info("Saved walk-forward model training metrics to %s", report_file)
+    return results
 
 
 if __name__ == "__main__":
-    for horizon in FORECAST_HORIZONS:
-        _, predictions, metrics, _ = train_and_predict(horizon=horizon)
-        logger.info("Horizon %s metrics: %s", horizon, metrics)
-        logger.info("Preview:\n%s", predictions.head())
+    train_and_evaluate()

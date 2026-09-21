@@ -1,50 +1,74 @@
-"""Project-wide configuration: paths, seeds, horizons, and modeling defaults."""
+"""Project-wide configuration for the annual malaria and climate forecasting pipeline."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+# Project directory structure
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_RAW = PROJECT_ROOT / "data" / "raw"
-DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
+DATA_DIR = PROJECT_ROOT / "data"
+DATA_RAW = DATA_DIR / "raw"
+DATA_PROCESSED = DATA_DIR / "processed"
+RASTERS_DIR = DATA_RAW / "map_rasters"
+BOUNDARIES_DIR = DATA_RAW / "boundaries"
 REPORTS_DIR = PROJECT_ROOT / "reports"
-FIGURE_DIR = PROJECT_ROOT / "notebooks" / "figures"
+FIGURE_DIR = PROJECT_ROOT / "figures"
 
 RANDOM_SEED = 42
 
-# GADM 4.1 Admin-2 units are prefectures, not Togo Ministry of Health districts.
-GADM_VERSION = "4.1"
-GADM_LAYER = "TGO_2"
-GADM_URL = "https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_TGO_2.json"
+# Country spatial boundaries sources
+COUNTRIES = {
+    "TGO": "https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_TGO_2.json",
+    "BEN": "https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_BEN_2.json",
+    "GHA": "https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_GHA_2.json",
+    "BFA": "https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_BFA_2.json",
+}
 
+# Temporal bounds
+START_YEAR = 2000
+END_YEAR = 2025
+
+# Climate provider settings
 CLIMATE_PROVIDER = "Open-Meteo Archive API"
-CLIMATE_REANALYSIS = "ERA5 (served by Open-Meteo; not a direct Copernicus CDS / cdsapi download)"
+CLIMATE_REANALYSIS = "ERA5"
 CLIMATE_API_URL = "https://archive-api.open-meteo.com/v1/archive"
 CLIMATE_TIMEZONE = "Africa/Lome"
-CLIMATE_START = "2015-01-01"
-CLIMATE_END = "2023-12-31"
 
-FORECAST_HORIZONS = (1, 2, 3)
-CLIMATE_LAGS = (1, 2, 3)
-INCIDENCE_LAGS = (0, 1, 2, 3, 12)
-ROLLING_WINDOW_MONTHS = 3
+# Dataset column naming conventions
+YEAR_COL = "year"
+DISTRICT_COL = "district_id"
+DISTRICT_ID_COL = DISTRICT_COL
+ISO3_COL = "iso3"
+REGION_COL = "region"
+DISTRICT_NAME_COL = "district_name"
+ID_COLUMNS = (ISO3_COL, DISTRICT_COL, DISTRICT_NAME_COL, REGION_COL, YEAR_COL)
 
-ID_COLUMNS = ("district_id", "district_name", "region", "date")
+INCIDENCE_COL = "pf_incidence_rate"
+MODEL_TARGET_COL = INCIDENCE_COL
 TARGET_PREFIX = "target_h"
-INCIDENCE_COL = "malaria_incidence"
+TARGET_PROXIES = {"pf_incidence_min", "pf_incidence_max"}
 
 CLIMATE_VARS = (
-    "precipitation_mm",
+    "precipitation_sum_mm",
+    "rainy_season_precip_mm",
+    "precip_anomaly_mm",
     "temp_mean_c",
     "temp_max_c",
     "temp_min_c",
+    "relative_humidity_mean",
 )
 
-N_BOOTSTRAP = 400
-WALK_FORWARD_TEST_MONTHS = 12
+WALK_FORWARD_TEST_YEARS = 8
 
 
 def ensure_data_dirs() -> None:
-    """Create raw, processed, report, and figure directories if they are missing."""
-    for path in (DATA_RAW, DATA_PROCESSED, REPORTS_DIR, FIGURE_DIR):
+    """Create required project directories if they do not exist."""
+    for path in (
+        DATA_RAW,
+        DATA_PROCESSED,
+        RASTERS_DIR,
+        BOUNDARIES_DIR,
+        REPORTS_DIR,
+        FIGURE_DIR,
+    ):
         path.mkdir(parents=True, exist_ok=True)

@@ -6,7 +6,7 @@ import pandas as pd
 from sklearn.inspection import permutation_importance
 
 from src.config import FIGURE_DIR, RANDOM_SEED, REPORTS_DIR, TARGET_PREFIX, ensure_data_dirs
-from src.features.engineering import prepare_horizon_frame
+from src.features.feature_engine import prepare_horizon_frame
 from src.logging_utils import get_logger
 from src.modeling.evaluation import walk_forward_splits
 from src.modeling.features import feature_columns

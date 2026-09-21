@@ -1,4 +1,4 @@
-"""Evaluation metrics, including skill scores and bootstrap intervals."""
+"""Evaluation metrics and statistical significance testing."""
 
 from __future__ import annotations
 
@@ -6,54 +6,59 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-from src.config import N_BOOTSTRAP, RANDOM_SEED
 
-
-def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
-    """Pooled MAE, RMSE, and R². R² is reported but is not the primary skill metric."""
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
-    mae = float(mean_absolute_error(y_true, y_pred))
+def compute_metrics(
+    y_true: np.ndarray, y_pred: np.ndarray, baseline_rmse: float | None = None
+) -> dict[str, float]:
+    """Compute standard regression metrics (RMSE, MAE, R2) and optional forecast skill score."""
     rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
-    r2 = float(r2_score(y_true, y_pred)) if len(np.unique(y_true)) > 1 else float("nan")
-    return {"mae": mae, "rmse": rmse, "r2": r2}
+    mae = float(mean_absolute_error(y_true, y_pred))
+    r2 = float(r2_score(y_true, y_pred))
+
+    metrics = {
+        "rmse": rmse,
+        "mae": mae,
+        "r2": r2,
+    }
+
+    if baseline_rmse is not None and baseline_rmse > 0:
+        # Forecast Skill Score relative to persistence RMSE
+        metrics["skill_vs_persistence"] = float(1.0 - (rmse / baseline_rmse))
+
+    return metrics
 
 
-def skill_score(model_mae: float, reference_mae: float) -> float:
-    """MAE skill relative to a reference (climatology). 1 is perfect, 0 matches the reference."""
-    if reference_mae == 0:
-        return float("nan")
-    return 1.0 - model_mae / reference_mae
+def paired_block_bootstrap_diff(
+    df: pd.DataFrame,
+    err_model: str,
+    err_baseline: str,
+    group_col: str = "district_id",
+    n_boot: int = 1000,
+    seed: int = 42,
+) -> tuple[float, tuple[float, float]]:
+    """Compute mean(|err_model|) - mean(|err_baseline|) with a district-level block bootstrap 95% CI.
+    
+    A negative difference indicates the candidate model outperforms the baseline.
+    If the 95% confidence interval crosses zero, the performance difference is NOT 
+    statistically significant at alpha = 0.05.
+    """
+    diff = df[err_model].abs() - df[err_baseline].abs()
+    grouped = diff.groupby(df[group_col])
 
+    block_sums = grouped.sum().to_numpy()
+    block_counts = grouped.count().to_numpy()
 
-def bootstrap_mae_interval(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    n_bootstrap: int = N_BOOTSTRAP,
-    seed: int = RANDOM_SEED,
-) -> tuple[float, float]:
-    """Percentile 95% interval for MAE by resampling test rows."""
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
+    num_blocks = len(block_sums)
+    if num_blocks == 0:
+        raise ValueError("Cannot perform block bootstrap on an empty DataFrame or grouping.")
+
     rng = np.random.default_rng(seed)
-    n_obs = len(y_true)
-    stats = []
-    for _ in range(n_bootstrap):
-        idx = rng.integers(0, n_obs, n_obs)
-        stats.append(mean_absolute_error(y_true[idx], y_pred[idx]))
-    low, high = np.percentile(stats, [2.5, 97.5])
-    return float(low), float(high)
 
+    # Resample district blocks with replacement across bootstrap iterations
+    sample_indices = rng.integers(0, num_blocks, size=(n_boot, num_blocks))
+    boot_means = block_sums[sample_indices].sum(axis=1) / block_counts[sample_indices].sum(axis=1)
 
-def grouped_mae(frame: pd.DataFrame, group_col: str, y_true: str, y_pred: str) -> pd.DataFrame:
-    """MAE by district or by calendar month."""
-    rows = []
-    for key, part in frame.groupby(group_col, sort=True):
-        rows.append(
-            {
-                group_col: key,
-                "n": int(len(part)),
-                "mae": float(mean_absolute_error(part[y_true], part[y_pred])),
-            }
-        )
-    return pd.DataFrame(rows)
+    obs_diff = float(diff.mean())
+    ci_lower, ci_upper = np.percentile(boot_means, [2.5, 97.5])
+
+    return obs_diff, (float(ci_lower), float(ci_upper))
